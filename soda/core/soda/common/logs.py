@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 from logging import Logger
 
 from soda.common.log import Log, LogLevel
@@ -31,23 +32,18 @@ def configure_logging():
 
 
 class Logs:
-    __instance = None
-
-    def __new__(cls, logger: Logger = None):
-        if cls.__instance is None:
-            cls.__instance = super().__new__(cls)
-            cls.__instance._initialize()
-        return cls.__instance
-
-    def _initialize(self):
+    def __init__(self, logger: Logger = None):
+        self._lock = threading.RLock()
         self.logs: list[Log] = []
         self.logs_buffer: list[Log] = []
         self.verbose: bool = False
 
-    def reset(self):
-        self.__instance = Logs()
-        self.__instance._initialize()
-        return self.__instance
+    def reset(self) -> Logs:
+        """Clears the logs of this instance."""
+        with self._lock:
+            self.logs = []
+            self.logs_buffer = []
+        return self
 
     def error(
         self,
@@ -119,7 +115,8 @@ class Logs:
             exception=exception,
         )
         log.log_to_python_logging()
-        self.logs.append(log)
+        with self._lock:
+            self.logs.append(log)
 
     def log_into_buffer(self, level, message, location, doc, exception):
         log = Log(
@@ -129,13 +126,15 @@ class Logs:
             doc=doc,
             exception=exception,
         )
-        self.logs_buffer.append(log)
+        with self._lock:
+            self.logs_buffer.append(log)
 
     def flush_buffer(self):
-        for log in self.logs_buffer:
-            log.log_to_python_logging()
-            self.logs.append(log)
-        self.logs_buffer = []
+        with self._lock:
+            buffered, self.logs_buffer = self.logs_buffer, []
+            for log in buffered:
+                log.log_to_python_logging()
+                self.logs.append(log)
 
     def error_into_buffer(
         self,
@@ -199,7 +198,9 @@ class Logs:
             )
 
     def log_message_present(self, message: str, full_match: bool = False) -> bool:
-        for log in self.logs:
+        with self._lock:
+            logs = list(self.logs)
+        for log in logs:
             if full_match:
                 if log.message == message:
                     return True
